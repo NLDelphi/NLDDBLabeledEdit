@@ -61,7 +61,6 @@ type
     procedure SetLabelFont(Value: TFont);
     procedure SetLabelGroupIndex(Value: Integer);
     function SubLabel: TNLDSubLabel;
-    procedure UpdateLabelCaption;
   protected
     procedure Loaded; override;
     procedure SetName(const NewName: TComponentName); override;
@@ -279,11 +278,10 @@ function TNLDDBLabeledEdit.DefaultLabelCaption: String;
 var
   F: TField;
 begin
-  if (DataField <> '') and (DataSource <> nil) and
-      (DataSource.DataSet <> nil) then
-    F := DataSource.DataSet.FieldByName(DataField)
+  if (DataField = '') or (DataSource = nil) or (DataSource.DataSet = nil) then
+    F := nil
   else
-    F := nil;
+    F := DataSource.DataSet.FindField(DataField);
   if F <> nil then
     Result := F.DisplayLabel
   else if RightStr(Name, Length(SEditNameSuffix)) = SEditNameSuffix then
@@ -334,7 +332,8 @@ end;
 procedure TNLDDBLabeledEdit.Loaded;
 begin
   inherited Loaded;
-  UpdateLabelCaption;
+  if LabelCaption = '' then
+    LabelCaption := DefaultLabelCaption;
 end;
 
 procedure TNLDDBLabeledEdit.SetBounds(ALeft, ATop, AWidth,
@@ -346,15 +345,16 @@ end;
 
 procedure TNLDDBLabeledEdit.SetDataField(const Value: String);
 var
-  LabelHadDefaultCaption: Boolean;
+  SyncCaption: Boolean;
   NewName: String;
 begin
   if DataField <> Value then
   begin
-    LabelHadDefaultCaption := not IsLabelCaptionStored;
+    SyncCaption := not (csLoading in ComponentState) and
+      (LabelCaption = DefaultLabelCaption);
     inherited DataField := Value;
-    if LabelHadDefaultCaption then
-      SubLabel.Caption := DefaultLabelCaption;
+    if SyncCaption then
+      LabelCaption := DefaultLabelCaption;
     if csDesigning in ComponentState then
     begin
       NewName := DataField + SEditNameSuffix;
@@ -370,19 +370,30 @@ begin
 end;
 
 procedure TNLDDBLabeledEdit.SetDataSource(Value: TDataSource);
+var
+  SyncCaption: Boolean;
 begin
-  inherited DataSource := Value;
-  UpdateLabelCaption;
+  if DataSource <> Value then
+  begin
+    SyncCaption := not (csLoading in ComponentState) and
+      (LabelCaption = DefaultLabelCaption);
+    inherited DataSource := Value;
+    if SyncCaption then
+      LabelCaption := DefaultLabelCaption;
+  end;
 end;
 
 procedure TNLDDBLabeledEdit.SetLabelCaption(const Value: String);
 begin
-  if Value = SHiddenSpace then
-    SubLabel.Caption := ' '
-  else if Value = '' then
-    SubLabel.Caption := DefaultLabelCaption
-  else
-    SubLabel.Caption := Value;
+  if LabelCaption <> Value then
+  begin
+    if Value = SHiddenSpace then
+      SubLabel.Caption := ' '
+    else if Value = '' then
+      SubLabel.Caption := DefaultLabelCaption
+    else
+      SubLabel.Caption := Value;
+  end;
 end;
 
 procedure TNLDDBLabeledEdit.SetLabelFont(Value: TFont);
@@ -396,9 +407,17 @@ begin
 end;
 
 procedure TNLDDBLabeledEdit.SetName(const NewName: TComponentName);
+var
+  SyncCaption: Boolean;
 begin
-  inherited SetName(NewName);
-  UpdateLabelCaption;
+  if Name <> NewName then
+  begin
+    SyncCaption := not (csLoading in ComponentState) and
+      (LabelCaption = DefaultLabelCaption);
+    inherited SetName(NewName);
+    if SyncCaption then
+      LabelCaption := DefaultLabelCaption;
+  end;
 end;
 
 procedure TNLDDBLabeledEdit.SetParent(AParent: TWinControl);
@@ -410,13 +429,6 @@ end;
 function TNLDDBLabeledEdit.SubLabel: TNLDSubLabel;
 begin
   Result := TNLDSubLabel(Components[0]);
-end;
-
-procedure TNLDDBLabeledEdit.UpdateLabelCaption;
-begin
-  if not (csLoading in ComponentState) then
-    if (SubLabel.Caption = '') or not IsLabelCaptionStored then
-      SubLabel.Caption := DefaultLabelCaption;
 end;
 
 procedure TNLDDBLabeledEdit.WndProc(var Message: TMessage);
