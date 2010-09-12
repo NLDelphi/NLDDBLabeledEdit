@@ -30,7 +30,8 @@ requires
   rtl,
   vcl,
   vcldb,
-  dbrtl;
+  dbrtl,
+  designide;
 
 contains
   NLDDBLabeledEdit in 'NLDDBLabeledEdit.pas';

@@ -11,8 +11,8 @@
 { *************************************************************************** }
 {                                                                             }
 { Edit by: Albert de Weerd (aka NGLN)                                         }
-{ Date: June 2, 2008                                                          }
-{ Version: 2.0.0.1                                                            }
+{ Date: September 12, 2010                                                    }
+{ Version: 2.0.0.2                                                            }
 {                                                                             }
 { *************************************************************************** }
 
@@ -21,325 +21,413 @@ unit NLDDBLabeledEdit;
 interface
 
 uses
-  Classes, DBCtrls, Messages, Controls, StdCtrls, ExtCtrls, DB;
+  Classes, Messages, Controls, SysUtils, Windows, Graphics, StdCtrls, DBCtrls,
+  DB, ToolsAPI, Math, StrUtils;
 
 type
-  TNLDBoundLabel = class(TCustomLabel)
+  TNLDSubLabel = class(TCustomLabel)
+  private
+    function GetGroupIndex: Integer;
+    procedure SetGroupIndex(Value: Integer);
+    procedure UnGroup(OldGroupIndex: Integer);
+    procedure CMDesignHitTest(var Message: TCMDesignHitTest);
+      message CM_DESIGNHITTEST;
+    procedure CMFontChanged(var Message: TMessage); message CM_FONTCHANGED;
+    procedure CMTextChanged(var Message: TMessage); message CM_TEXTCHANGED;
   protected
-    procedure AdjustBounds; override;
+    procedure Click; override;
   public
     constructor Create(AOwner: TComponent); override;
-  published
-    property BiDiMode;
-    property Caption;
-    property Color;
+    procedure Update; reintroduce;
+    property GroupIndex: Integer read GetGroupIndex write SetGroupIndex;
+  public
     property Font;
-    property ParentBiDiMode;
-    property ParentColor;
     property ParentFont;
-    property ParentShowHint;
-    property PopupMenu;
-    property ShowAccelChar;
-    property ShowHint;
-    property Transparent;
-    property Layout;
-    property WordWrap;
-    property OnClick;
-    property OnContextPopup;
-    property OnDblClick;
-    property OnDragDrop;
-    property OnDragOver;
-    property OnEndDock;
-    property OnMouseDown;
-    property OnMouseMove;
-    property OnMouseUp;
-    property OnStartDock;
   end;
 
   TNLDDBLabeledEdit = class(TDBEdit)
   private
-    FLabel: TNLDBoundLabel;
-    FLabelPosition: TLabelPosition;
-    FLabelSpacing: Integer;
-    FLabelSuffix: Boolean;
-    FGroupIndex: Integer;
-    function GetDataField: string;
-    function GetDefaultLabelCaption: String;
-    function IsDefaultLabelCaption: Boolean;
-    function IsLabelSuffixStored: Boolean;
-    procedure SetDataField(const Value: string);
-    procedure SetGroupIndex(const Value: Integer);
-    procedure SetLabelPosition(const Value: TLabelPosition);
-    procedure SetLabelSpacing(const Value: Integer);
-    procedure SetLabelSuffix(const Value: Boolean);
-    procedure UpdateLabel;
-    procedure UpdateGroup;
-    procedure CMVisiblechanged(var Message: TMessage);
-      message CM_VISIBLECHANGED;
-    procedure CMEnabledchanged(var Message: TMessage);
-      message CM_ENABLEDCHANGED;
-    procedure CMBidimodechanged(var Message: TMessage);
-      message CM_BIDIMODECHANGED;
+    function DefaultLabelCaption: String;
+    function GetDataField: String;
+    function GetDataSource: TDataSource;
+    function GetLabelCaption: String;
+    function GetLabelFont: TFont;
+    function GetLabelGroupIndex: Integer;
+    function IsLabelCaptionStored: Boolean;
+    function IsLabelFontStored: Boolean;
+    procedure SetDataField(const Value: String);
+    procedure SetDataSource(Value: TDataSource);
+    procedure SetLabelCaption(const Value: String);
+    procedure SetLabelFont(Value: TFont);
+    procedure SetLabelGroupIndex(Value: Integer);
+    function SubLabel: TNLDSubLabel;
+    procedure UpdateLabelCaption;
   protected
     procedure Loaded; override;
-    procedure Notification(AComponent: TComponent; Operation: TOperation);
-      override;
-    procedure SetName(const Value: TComponentName); override;
+    procedure SetName(const NewName: TComponentName); override;
     procedure SetParent(AParent: TWinControl); override;
+    procedure WndProc(var Message: TMessage); override;
   public
     constructor Create(AOwner: TComponent); override;
-    procedure SetBounds(ALeft: Integer; ATop: Integer; AWidth: Integer;
-      AHeight: Integer); override;
+    procedure SetBounds(ALeft, ATop, AWidth, AHeight: Integer); override;
   published
-    property DataField: string read GetDataField write SetDataField;
-    property EditLabel: TNLDBoundLabel read FLabel;
-    property GroupIndex: Integer read FGroupIndex write SetGroupIndex default 0;
-    property LabelPosition: TLabelPosition read FLabelPosition
-      write SetLabelPosition default lpLeft;
-    property LabelSpacing: Integer read FLabelSpacing
-      write SetLabelSpacing default 3;
-    property LabelSuffix: Boolean read FLabelSuffix write SetLabelSuffix
-      stored IsLabelSuffixStored;
+    property DataField: String read GetDataField write SetDataField;
+    property DataSource: TDataSource read GetDataSource write SetDataSource;
+    property LabelCaption: String read GetLabelCaption write SetLabelCaption
+      stored IsLabelCaptionStored;
+    property LabelFont: TFont read GetLabelFont write SetLabelFont
+      stored IsLabelFontStored;
+    property LabelGroupIndex: Integer read GetLabelGroupIndex
+      write SetLabelGroupIndex default 0;
   end;
 
 procedure Register;
 
 implementation
 
-uses
-  Windows;
-
 procedure Register;
 begin
   RegisterComponents('NLDelphi', [TNLDDBLabeledEdit]);
 end;
 
-{ TNLDBoundLabel }
+type
+  TWinControlAccess = class(TWinControl);
 
-procedure TNLDBoundLabel.AdjustBounds;
+function GetActiveFormEditor: IOTAFormEditor;
+var
+  ModuleServices: IOTAModuleServices;
+  Module: IOTAModule;
+  Editor: IOTAEditor;
 begin
-  inherited AdjustBounds;
-  if Owner is TNLDDBLabeledEdit then
-    TNLDDBLabeledEdit(Owner).UpdateLabel;
+  ModuleServices := BorlandIDEServices as IOTAModuleServices;
+  Module := ModuleServices.CurrentModule;
+  Editor := Module.CurrentEditor;
+  Result := Editor as IOTAFormEditor;
 end;
 
-constructor TNLDBoundLabel.Create(AOwner: TComponent);
+function SameFont(Font1, Font2: TFont): Boolean;
 begin
-  inherited Create(AOwner);
-  if AOwner is TNLDDBLabeledEdit then
+  Result := (Font1.Handle = Font2.Handle) and (Font1.Color = Font2.Color);
+end;
+
+{ TNLDSubLabel }
+
+const
+  SEditNameSuffix = 'Edit';
+  SHiddenSpace = '(space)';
+  SInvalidSubLabelOwner = 'Owner of SubLabel must be of type TWinControl.';
+  SSubLabelCaptionSuffix = ':';
+
+function FindLabel(Parent: TWinControl; ControlIndex: Integer;
+  out Lbl: TNLDSubLabel): Boolean;
+begin
+  if Parent.Controls[ControlIndex] is TNLDSubLabel then
+    Lbl := TNLDSubLabel(Parent.Controls[ControlIndex])
+  else
+    Lbl := nil;
+  Result := Lbl <> nil;
+end;
+
+procedure TNLDSubLabel.Click;
+var
+  FocusControl: IOTAComponent;
+begin
+  if not (csDesigning in ComponentState) then
+    TWinControl(Owner).SetFocus
+  else
   begin
-    Name := 'SubLabel';
-    SetSubComponent(True);
+    FocusControl := GetActiveFormEditor.FindComponent(Owner.Name);
+    if FocusControl <> nil then
+      FocusControl.Select(False);
+  end;
+  inherited Click;
+end;
+
+procedure TNLDSubLabel.CMDesignHitTest(var Message: TCMDesignHitTest);
+begin
+  inherited;
+  Message.Result := HTCLIENT;
+end;
+
+procedure TNLDSubLabel.CMFontChanged(var Message: TMessage);
+var
+  F: TFont;
+begin
+  inherited;
+  if HasParent and (not ParentFont) and (Font.Color = clDefault) then
+  begin
+    F := TFont.Create;
+    try
+      F.Assign(Font);
+      F.Color := TWinControlAccess(Parent).Font.Color;
+      if SameFont(F, TWinControlAccess(Parent).Font) then
+        ParentFont := True;
+    finally
+      F.Free;
+    end;
+  end;
+end;
+
+procedure TNLDSubLabel.CMTextChanged(var Message: TMessage);
+begin
+  inherited;
+  Update;
+end;
+
+constructor TNLDSubLabel.Create(AOwner: TComponent);
+begin
+  if not (AOwner is TWinControl) then
+    raise EComponentError.Create(SInvalidSubLabelOwner);
+  inherited Create(AOwner);
+  AutoSize := True;
+  ControlStyle := [csClickEvents, csSetCaption, csOpaque, csParentBackground,
+    csDoubleClicks];
+  FocusControl := TWinControl(Owner);
+  Transparent := True;
+end;
+
+function TNLDSubLabel.GetGroupIndex: Integer;
+begin
+  Result := Tag;
+end;
+
+procedure TNLDSubLabel.SetGroupIndex(Value: Integer);
+var
+  OldGroupIndex: Integer;
+begin
+  if GroupIndex <> Value then
+  begin
+    if GroupIndex <> 0 then
+    begin
+      OldGroupIndex := GroupIndex;
+      Tag := Value;
+      Ungroup(OldGroupIndex);
+    end
+    else
+    begin
+      Tag := Value;
+      Update;
+    end;
+  end;
+end;
+
+procedure TNLDSubLabel.UnGroup(OldGroupIndex: Integer);
+var
+  i: Integer;
+  Lbl: TNLDSubLabel;
+begin
+  AdjustBounds;
+  Update;
+  if Parent <> nil then
+  begin
+    for i := 0 to Parent.ControlCount - 1 do
+      if FindLabel(Parent, i, Lbl) then
+        if Lbl.GroupIndex = OldGroupIndex then
+          Lbl.AdjustBounds;
+    for i := 0 to Parent.ControlCount - 1 do
+      if FindLabel(Parent, i, Lbl) then
+        if Lbl.GroupIndex = OldGroupIndex then
+        begin
+          Lbl.Update;
+          Break;
+        end;
+  end;
+end;
+
+procedure TNLDSubLabel.Update;
+var
+  i: Integer;
+  Lbl: TNLDSubLabel;
+  NewWidth: Integer;
+begin
+  Parent := TControl(Owner).Parent;
+  Enabled := TControl(Owner).Enabled;
+  Visible := TControl(Owner).Visible;
+  NewWidth := 0;
+  if Parent <> nil then
+  begin
+    if GroupIndex = 0 then
+      with TControl(Owner) do
+        Self.SetBounds(Left - Self.Width - 3, Top + 3, Self.Width, Height)
+    else
+    begin
+      for i := 0 to Parent.ControlCount - 1 do
+        if FindLabel(Parent, i, Lbl) then
+          if (Lbl.GroupIndex <> 0) and (Lbl.GroupIndex = GroupIndex) then
+          begin
+            Lbl.AdjustBounds;
+            NewWidth := Max(NewWidth, Lbl.Width);
+          end;
+      for i := 0 to Parent.ControlCount - 1 do
+        if FindLabel(Parent, i, Lbl) then
+          if (Lbl.GroupIndex <> 0) and (Lbl.GroupIndex = GroupIndex) then
+            with TControl(Lbl.Owner) do
+              Lbl.SetBounds(Left - NewWidth - 3, Top + 3, NewWidth, Height);
+    end;
   end;
 end;
 
 { TNLDDBLabeledEdit }
 
-procedure TNLDDBLabeledEdit.CMBidimodechanged(var Message: TMessage);
-begin
-  inherited;
-  FLabel.BiDiMode := BiDiMode;
-end;
-
-procedure TNLDDBLabeledEdit.CMEnabledchanged(var Message: TMessage);
-begin
-  inherited;
-  FLabel.Enabled := Enabled;
-end;
-
-procedure TNLDDBLabeledEdit.CMVisiblechanged(var Message: TMessage);
-begin
-  inherited;
-  FLabel.Visible := Visible;
-end;
-
 constructor TNLDDBLabeledEdit.Create(AOwner: TComponent);
 begin
+  TNLDSubLabel.Create(Self);
   inherited Create(AOwner);
-  FLabelPosition := lpLeft;
-  FLabelSpacing := 3;
-  FLabelSuffix := True;
-  FLabel := TNLDBoundLabel.Create(Self);
-  FLabel.FreeNotification(Self);
-  FLabel.FocusControl := Self;
 end;
 
-function TNLDDBLabeledEdit.GetDataField: string;
+function TNLDDBLabeledEdit.DefaultLabelCaption: String;
+var
+  F: TField;
+begin
+  if (DataField <> '') and (DataSource <> nil) and
+      (DataSource.DataSet <> nil) then
+    F := DataSource.DataSet.FieldByName(DataField)
+  else
+    F := nil;
+  if F <> nil then
+    Result := F.DisplayLabel
+  else if RightStr(Name, Length(SEditNameSuffix)) = SEditNameSuffix then
+    Result := Copy(Name, 1, Length(Name) - Length(SEditNameSuffix))
+  else
+    Result := Name;
+  if Trim(Result) <> '' then
+    Result := Result + SSubLabelCaptionSuffix;
+end;
+
+function TNLDDBLabeledEdit.GetDataField: String;
 begin
   Result := inherited DataField;
 end;
 
-function TNLDDBLabeledEdit.GetDefaultLabelCaption: String;
+function TNLDDBLabeledEdit.GetDataSource: TDataSource;
 begin
-  if (DataField = '') or (DataSource = nil) or (DataSource.DataSet = nil) then
-    Result := Name
-  else
-    Result := DataSource.DataSet.FieldByName(DataField).DisplayLabel;
-  if FLabelSuffix then
-    Result := Result + ':'
+  Result := inherited DataSource;
 end;
 
-function TNLDDBLabeledEdit.IsDefaultLabelCaption: Boolean;
+function TNLDDBLabeledEdit.GetLabelCaption: String;
 begin
-  Result := (FLabel.Caption = GetDefaultLabelCaption) or
-    (FLabel.Caption = FLabel.Name);
+  Result := SubLabel.Caption;
+  if (Result = ' ') and (csDesigning in ComponentState) then
+    Result := SHiddenSpace;
 end;
 
-function TNLDDBLabeledEdit.IsLabelSuffixStored: Boolean;
+function TNLDDBLabeledEdit.GetLabelFont: TFont;
 begin
-  Result := (FLabelSuffix and (FLabelPosition in [lpRight, lpBelow])) or
-    ((not FLabelSuffix) and (FLabelPosition in [lpLeft, lpAbove]));
+  Result := SubLabel.Font;
+end;
+
+function TNLDDBLabeledEdit.GetLabelGroupIndex: Integer;
+begin
+  Result := SubLabel.GroupIndex ;
+end;
+
+function TNLDDBLabeledEdit.IsLabelCaptionStored: Boolean;
+begin
+  Result := LabelCaption <> DefaultLabelCaption;
+end;
+
+function TNLDDBLabeledEdit.IsLabelFontStored: Boolean;
+begin
+  Result := not SubLabel.ParentFont;
 end;
 
 procedure TNLDDBLabeledEdit.Loaded;
-var
-  UpdateLabelCaption: Boolean;
 begin
-  UpdateLabelCaption := IsDefaultLabelCaption;
   inherited Loaded;
-  if UpdateLabelCaption then
-    FLabel.Caption := GetDefaultLabelCaption;
+  UpdateLabelCaption;
 end;
 
-procedure TNLDDBLabeledEdit.Notification(AComponent: TComponent;
-  Operation: TOperation);
-begin
-  inherited Notification(AComponent, Operation);
-  if (AComponent = FLabel) and (Operation = opRemove) then
-    FLabel := nil;
-end;
-
-procedure TNLDDBLabeledEdit.SetBounds(ALeft, ATop, AWidth, AHeight: Integer);
+procedure TNLDDBLabeledEdit.SetBounds(ALeft, ATop, AWidth,
+  AHeight: Integer);
 begin
   inherited SetBounds(ALeft, ATop, AWidth, AHeight);
-  UpdateLabel;
+  SubLabel.Update;
 end;
 
-procedure TNLDDBLabeledEdit.SetDataField(const Value: string);
+procedure TNLDDBLabeledEdit.SetDataField(const Value: String);
 var
-  UpdateLabelCaption: Boolean;
+  LabelHadDefaultCaption: Boolean;
+  NewName: String;
 begin
   if DataField <> Value then
   begin
-    UpdateLabelCaption := IsDefaultLabelCaption;
+    LabelHadDefaultCaption := not IsLabelCaptionStored;
     inherited DataField := Value;
-    if UpdateLabelCaption then
-      FLabel.Caption := GetDefaultLabelCaption;
-    try
-      Name := Value;
-    except
-      on EComponentError do {eat exception};
-    else
-      Raise;
+    if LabelHadDefaultCaption then
+      SubLabel.Caption := DefaultLabelCaption;
+    if csDesigning in ComponentState then
+    begin
+      NewName := DataField + SEditNameSuffix;
+      if IsValidIdent(NewName) and not SameText(Name, NewName) and
+        (Owner <> nil) and (Owner.FindComponent(NewName) = nil) then
+      try
+        Name := NewName;
+      except
+        { Eat exception }
+      end;
     end;
   end;
 end;
 
-procedure TNLDDBLabeledEdit.SetGroupIndex(const Value: Integer);
+procedure TNLDDBLabeledEdit.SetDataSource(Value: TDataSource);
 begin
-  if FGroupIndex <> Value then
-  begin
-    FGroupIndex := Value;
-    UpdateGroup;
-  end;
+  inherited DataSource := Value;
+  UpdateLabelCaption;
 end;
 
-procedure TNLDDBLabeledEdit.SetLabelPosition(const Value: TLabelPosition);
+procedure TNLDDBLabeledEdit.SetLabelCaption(const Value: String);
 begin
-  if FLabelPosition <> Value then
-  begin
-    FLabelPosition := Value;
-    UpdateGroup;
-  end;
+  if Value = SHiddenSpace then
+    SubLabel.Caption := ' '
+  else if Value = '' then
+    SubLabel.Caption := DefaultLabelCaption
+  else
+    SubLabel.Caption := Value;
 end;
 
-procedure TNLDDBLabeledEdit.SetLabelSpacing(const Value: Integer);
+procedure TNLDDBLabeledEdit.SetLabelFont(Value: TFont);
 begin
-  if FLabelSpacing <> Value then
-  begin
-    FLabelSpacing := Value;
-    UpdateGroup;
-  end;
+  SubLabel.Font.Assign(Value);
 end;
 
-procedure TNLDDBLabeledEdit.SetLabelSuffix(const Value: Boolean);
-var
-  UpdateLabelCaption: Boolean;
+procedure TNLDDBLabeledEdit.SetLabelGroupIndex(Value: Integer);
 begin
-  if FLabelSuffix <> Value then
-  begin
-    UpdateLabelCaption := IsDefaultLabelCaption;
-    FLabelSuffix := Value;
-    if UpdateLabelCaption then
-      FLabel.Caption := GetDefaultLabelCaption;
-  end;
+  SubLabel.GroupIndex := Value;
 end;
 
-procedure TNLDDBLabeledEdit.SetName(const Value: TComponentName);
-var
-  UpdateLabelCaption: Boolean;
+procedure TNLDDBLabeledEdit.SetName(const NewName: TComponentName);
 begin
-  if Name <> Value then
-  begin
-    UpdateLabelCaption := IsDefaultLabelCaption;
-    inherited SetName(Value);
-    if UpdateLabelCaption then
-      FLabel.Caption := GetDefaultLabelCaption;
-  end;
+  inherited SetName(NewName);
+  UpdateLabelCaption;
 end;
 
 procedure TNLDDBLabeledEdit.SetParent(AParent: TWinControl);
 begin
   inherited SetParent(AParent);
-  if FLabel <> nil then
-  begin
-    FLabel.Parent := AParent;
-    FLabel.Visible := True;
-  end;
+  SubLabel.Update;
 end;
 
-procedure TNLDDBLabeledEdit.UpdateLabel;
-var
-  P: TPoint;
+function TNLDDBLabeledEdit.SubLabel: TNLDSubLabel;
 begin
-  if FLabel <> nil then
-  begin
-    case FLabelPosition of
-      lpAbove: P := Point(Left, Top - FLabel.Height - FLabelSpacing);
-      lpBelow: P := Point(Left, Top + Height + FLabelSpacing);
-      lpLeft : P := Point(Left - FLabel.Width - FLabelSpacing,
-                      Top + ((Height - FLabel.Height) div 2));
-      lpRight: P := Point(Left + Width + FLabelSpacing,
-                      Top + ((Height - FLabel.Height) div 2));
-    end;
-    FLabel.SetBounds(P.X, P.Y, FLabel.Width, FLabel.Height);
-  end;
+  Result := TNLDSubLabel(Components[0]);
 end;
 
-procedure TNLDDBLabeledEdit.UpdateGroup;
-var
-  i: Integer;
-  NewLabelRelLeft: Integer;
-
-  function GetEdit(IndexInOwnerComponents: Integer): TNLDDBLabeledEdit;
-  begin
-    Result := TNLDDBLabeledEdit(Owner.Components[IndexInOwnerComponents]);
-  end;
-
+procedure TNLDDBLabeledEdit.UpdateLabelCaption;
 begin
-  UpdateLabel;
-  if (FGroupIndex <> 0) and (Owner <> nil) and (FLabelPosition = lpLeft) then
-  begin
-    NewLabelRelLeft := FLabel.Width + FLabelSpacing;
-    for i := 0 to Owner.ComponentCount - 1 do
-      if (Owner.Components[i] is TNLDDBLabeledEdit) and
-        (GetEdit(i).GroupIndex = FGroupIndex) and
-        (GetEdit(i).LabelPosition = lpLeft) and (GetEdit(i) <> Self) then
-      begin
-        GetEdit(i).FLabelSpacing := NewLabelRelLeft - GetEdit(i).FLabel.Width;
-        GetEdit(i).UpdateLabel;
-      end;
+  if not (csLoading in ComponentState) then
+    if (SubLabel.Caption = '') or not IsLabelCaptionStored then
+      SubLabel.Caption := DefaultLabelCaption;
+end;
+
+procedure TNLDDBLabeledEdit.WndProc(var Message: TMessage);
+begin
+  case Message.Msg of
+    CM_ENABLEDCHANGED,
+    CM_VISIBLECHANGED,
+    WM_WINDOWPOSCHANGED:
+      SubLabel.Update;
   end;
+  inherited WndProc(Message);
 end;
 
 end.
